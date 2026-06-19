@@ -26,6 +26,16 @@ static int a320_read_reg(const struct device *dev, uint8_t reg_addr) {
     return -1;
 }
 
+
+static int a320_write_reg(const struct device *dev, uint8_t reg_addr, uint8_t value) {
+    const struct a320_config *cfg = dev->config;
+    if (i2c_reg_write_byte_dt(&cfg->bus, reg_addr, value)) {
+        LOG_ERR("failed to write 0x%x register", reg_addr);
+        return -EIO;
+    }
+    return 0;
+}
+
 static int a320_sample_fetch(const struct device *dev, enum sensor_channel chan) { return 0; }
 
 static int a320_channel_get(const struct device *dev, enum sensor_channel chan,
@@ -59,6 +69,11 @@ static int a320_init(const struct device *dev) {
     a320_read_reg(dev, Motion);
     a320_read_reg(dev, Delta_X);
     a320_read_reg(dev, Delta_Y);
+    // Force the optical sensor to stay in Run mode (disable auto-sleep/rest), so it
+    // doesn't drop out on idle / first-touch. PixArt OFN: clear sleep-enable bit and
+    // disable the rest-state engine. (uConsole patch)
+    a320_write_reg(dev, Configuration_Bits, 0x00);  // clear sleep-enable bits -> always Run
+    a320_write_reg(dev, OFN_Engine, 0x00);          // disable Rest1/2/3 state engine
     LOG_DBG("A320 Init done, Ready to read data.");
 
     return 0;
