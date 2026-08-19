@@ -19,6 +19,11 @@
 #include <zmk/event_manager.h>
 #include <zmk/events/activity_state_changed.h>
 #include <zmk/events/usb_conn_state_changed.h>
+#if IS_ENABLED(CONFIG_ZMK_HID_INDICATORS)
+#include <dt-bindings/zmk/hid_indicators.h>
+#include <zmk/hid_indicators.h>
+#include <zmk/events/hid_indicators_changed.h>
+#endif // IS_ENABLED(CONFIG_ZMK_HID_INDICATORS)
 
 LOG_MODULE_DECLARE(zmk, CONFIG_ZMK_LOG_LEVEL);
 
@@ -42,8 +47,34 @@ struct backlight_state {
 static struct backlight_state state = {.brightness = CONFIG_ZMK_BACKLIGHT_BRT_START,
                                        .on = IS_ENABLED(CONFIG_ZMK_BACKLIGHT_ON_START)};
 
+#if IS_ENABLED(CONFIG_ZMK_HID_INDICATORS)
+// Non-persistent DPMS-sync suppression: the uConsole host toggles the unused
+// HID Scroll Lock indicator (this keyboard has no scroll-lock key) when its
+// display enters/exits power-save, via swayidle + a direct EV_LED write to
+// the keyboard's evdev node (verified: this reaches the real USB Set_Report
+// without any EV_KEY event, so it cannot reset host-side idle timers).
+//
+// This must NOT go through zmk_backlight_on()/off() -- both persist `state`
+// via a debounced settings_save_one("backlight/state", ...), so a screen-off
+// period longer than CONFIG_ZMK_SETTINGS_SAVE_DEBOUNCE would flash the
+// suppressed (off) state to NVS, surviving reboot. Suppression is instead
+// applied only at the point brightness is written to the LEDs, mirroring
+// the existing AUTO_OFF_IDLE/AUTO_OFF_USB pattern below.
+static bool dpms_suppressed = false;
+#endif // IS_ENABLED(CONFIG_ZMK_HID_INDICATORS)
+
 static int zmk_backlight_update() {
     uint8_t brt = zmk_backlight_get_brt();
+
+#if IS_ENABLED(CONFIG_ZMK_HID_INDICATORS)
+    // Force the physical LEDs off while DPMS-suppressed, without touching
+    // `state` -- zmk_backlight_get_brt() (and anything else reading it, e.g.
+    // status queries) still reports the user's real persisted brightness.
+    if (dpms_suppressed) {
+        brt = 0;
+    }
+#endif // IS_ENABLED(CONFIG_ZMK_HID_INDICATORS)
+
     LOG_DBG("Update backlight brightness: %d%%", brt);
 
     for (int i = 0; i < BACKLIGHT_NUM_LEDS; i++) {
@@ -190,3 +221,29 @@ ZMK_SUBSCRIPTION(backlight, zmk_usb_conn_state_changed);
 #endif
 
 SYS_INIT(zmk_backlight_init, APPLICATION, CONFIG_APPLICATION_INIT_PRIORITY);
+
+#if IS_ENABLED(CONFIG_ZMK_HID_INDICATORS)
+// Sync backlight suppression to the unused Scroll Lock HID indicator (see the
+// `dpms_suppressed` comment above): host sets it when the display enters
+// power-save, clears it on wake. Deliberately does not touch `state.on`, so
+// a manual toggle (BL_TOG) or the idle/USB auto-off logic above stays exactly
+// as the user left it once suppression clears -- this only overrides what
+// gets written to the physical LEDs while suppressed.
+static int backlight_dpms_listener(const zmk_event_t *eh) {
+    struct zmk_hid_indicators_changed *ev = as_zmk_hid_indicators_changed(eh);
+    if (ev == NULL) {
+        return -ENOTSUP;
+    }
+
+    const bool suppress = (ev->indicators & HID_INDICATOR_SCROLL_LOCK) != 0;
+    if (suppress == dpms_suppressed) {
+        return 0;
+    }
+
+    dpms_suppressed = suppress;
+    return zmk_backlight_update();
+}
+
+ZMK_LISTENER(backlight_dpms, backlight_dpms_listener);
+ZMK_SUBSCRIPTION(backlight_dpms, zmk_hid_indicators_changed);
+#endif // IS_ENABLED(CONFIG_ZMK_HID_INDICATORS)
