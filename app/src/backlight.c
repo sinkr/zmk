@@ -20,9 +20,16 @@
 #include <zmk/events/activity_state_changed.h>
 #include <zmk/events/usb_conn_state_changed.h>
 #if IS_ENABLED(CONFIG_ZMK_HID_INDICATORS)
-#include <dt-bindings/zmk/hid_indicators.h>
 #include <zmk/hid_indicators.h>
 #include <zmk/events/hid_indicators_changed.h>
+
+// This fork's tree predates upstream's dt-bindings/zmk/hid_indicators.h
+// (which just wraps hid_usage.h's HID_USAGE_LED_* into shifted bit macros);
+// define the one bit we need locally against the HID_USAGE_LED_* already
+// present here rather than adding a header this checkout doesn't have.
+#include <dt-bindings/zmk/hid_usage.h>
+#define HID_INDICATOR_SCROLL_LOCK                                                                 \
+    (1 << (HID_USAGE_LED_SCROLL_LOCK - HID_USAGE_LED_NUM_LOCK))
 #endif // IS_ENABLED(CONFIG_ZMK_HID_INDICATORS)
 
 LOG_MODULE_DECLARE(zmk, CONFIG_ZMK_LOG_LEVEL);
