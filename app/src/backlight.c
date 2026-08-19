@@ -67,25 +67,39 @@ static struct backlight_state state = {.brightness = CONFIG_ZMK_BACKLIGHT_BRT_ST
 // suppressed (off) state to NVS, surviving reboot. Suppression is instead
 // applied only at the point brightness is written to the LEDs, mirroring
 // the existing AUTO_OFF_IDLE/AUTO_OFF_USB pattern below.
+//
+// Only the trackpad LED ring should go dark on DPMS-suppress, not the
+// keyboard backlight -- both are children of the same zmk,backlight node
+// (config/bb9900.overlay: pwm_led_0 = pwm1 keyboard backlight,
+// pwm_led_1 = pwm2 trackpad ring), and zmk_backlight_update() writes one
+// shared brightness to every child by index. Zeroing brt unconditionally
+// before the loop (an earlier version of this patch) would have blanked
+// BOTH LEDs. Suppression is applied per-index inside the loop instead.
+#define TRACKPAD_RING_LED_INDEX 1
+BUILD_ASSERT(BACKLIGHT_NUM_LEDS > TRACKPAD_RING_LED_INDEX,
+             "zmk,backlight has fewer children than expected -- update "
+             "TRACKPAD_RING_LED_INDEX to match config/bb9900.overlay");
 static bool dpms_suppressed = false;
 #endif // IS_ENABLED(CONFIG_ZMK_HID_INDICATORS)
 
 static int zmk_backlight_update() {
     uint8_t brt = zmk_backlight_get_brt();
-
-#if IS_ENABLED(CONFIG_ZMK_HID_INDICATORS)
-    // Force the physical LEDs off while DPMS-suppressed, without touching
-    // `state` -- zmk_backlight_get_brt() (and anything else reading it, e.g.
-    // status queries) still reports the user's real persisted brightness.
-    if (dpms_suppressed) {
-        brt = 0;
-    }
-#endif // IS_ENABLED(CONFIG_ZMK_HID_INDICATORS)
-
     LOG_DBG("Update backlight brightness: %d%%", brt);
 
     for (int i = 0; i < BACKLIGHT_NUM_LEDS; i++) {
-        int rc = led_set_brightness(backlight_dev, i, brt);
+        uint8_t led_brt = brt;
+
+#if IS_ENABLED(CONFIG_ZMK_HID_INDICATORS)
+        // Force just the ring off while DPMS-suppressed, without touching
+        // `state` -- zmk_backlight_get_brt() (and anything else reading it,
+        // e.g. status queries) still reports the user's real persisted
+        // brightness, and the keyboard backlight (index 0) is unaffected.
+        if (dpms_suppressed && i == TRACKPAD_RING_LED_INDEX) {
+            led_brt = 0;
+        }
+#endif // IS_ENABLED(CONFIG_ZMK_HID_INDICATORS)
+
+        int rc = led_set_brightness(backlight_dev, i, led_brt);
         if (rc != 0) {
             LOG_ERR("Failed to update backlight LED %d: %d", i, rc);
             return rc;
